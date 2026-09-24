@@ -3,6 +3,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 from app.db import Base
 
@@ -13,6 +14,67 @@ def _uuid4_str() -> str:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class UTCDateTime(TypeDecorator):
+    """`DateTime(timezone=True)` that always round-trips as aware UTC,
+    on every dialect.
+
+    Why this exists: Postgres (production) has a real `timestamptz` type
+    and hands back aware UTC datetimes. SQLite (the whole test suite)
+    has no timezone-aware storage at all -- the exact same
+    `DateTime(timezone=True)` column silently comes back NAIVE there,
+    even though every value this app ever writes is UTC. Code that reads
+    `patient.created_at` (or `deleted_at`, `updated_at`) and compares it
+    against an aware `datetime.now(timezone.utc)` would then get
+    `TypeError: can't compare offset-naive and offset-aware datetimes`
+    on SQLite while working fine on Postgres -- or, if the comparison is
+    instead built as a SQLAlchemy expression (`Column >= value`) rather
+    than a Python-level comparison, it can silently rely on both sides
+    happening to format to the same UTC wall-clock string, which is true
+    only as long as nobody ever binds a non-UTC value. Neither behavior
+    should be left to chance.
+
+    This type collapses both dialects to one observable behavior:
+    - Read (`process_result_value`): a naive result (SQLite) is stamped
+      with `tzinfo=UTC` -- safe, because every value this app writes
+      already IS UTC, never local time. An aware result (Postgres) is
+      normalized to UTC too, so a differently-configured session
+      timezone can never change what Python sees.
+    - Write (`process_bind_param`): naive input is rejected outright
+      rather than silently assumed to be UTC. This forces every caller
+      to be explicit (`datetime.now(timezone.utc)`), which in turn means
+      SQLite's dialect never strips a meaningful offset -- the wall-clock
+      fields it stores are always genuinely UTC -- and Postgres never
+      receives a naive value whose interpretation would depend on the
+      session's `TimeZone` setting.
+
+    Net effect: application code can compare `patient.created_at`
+    against an aware UTC datetime, or build a `Column >= value` filter
+    with one, and get the same, correct answer on both dialects.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError(
+                "naive datetime written to a UTCDateTime column; "
+                "use datetime.now(timezone.utc), never a naive datetime"
+            )
+        return value.astimezone(timezone.utc)
+
+    def process_result_value(self, value: datetime | None, dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            # SQLite: every value we ever wrote was already UTC, so a
+            # naive result is unambiguous -- just re-attach the offset.
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 class Patient(Base):
@@ -43,12 +105,12 @@ class Patient(Base):
     emergency_contact_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     emergency_contact_phone: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+        UTCDateTime, default=_utcnow, onupdate=_utcnow
     )
     # Soft delete. Rows with a value here are invisible to list and get.
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     __table_args__ = (
         Index("ix_patients_phone_number", "phone_number"),
@@ -71,4 +133,4 @@ class CallTranscript(Base):
     )
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=_utcnow)
