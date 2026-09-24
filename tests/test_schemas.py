@@ -97,6 +97,40 @@ def test_insurance_member_id_allows_hyphens_and_spaces():
     assert patient.insurance_member_id == "XYZ-123 456"
 
 
+@pytest.mark.parametrize("field", ["state", "sex", "zip_code", "phone_number", "first_name"])
+def test_update_rejects_explicit_blank_on_not_null_field(field):
+    with pytest.raises(ValidationError):
+        PatientUpdate(**{field: ""})
+
+
+@pytest.mark.parametrize("field", ["state", "sex", "zip_code", "phone_number", "first_name"])
+def test_update_rejects_explicit_null_on_not_null_field(field):
+    with pytest.raises(ValidationError):
+        PatientUpdate(**{field: None})
+
+
+def test_update_blank_state_gives_the_state_spoken_error():
+    with pytest.raises(ValidationError) as exc:
+        PatientUpdate(state="")
+    assert "state" in spoken_error_for(exc.value).lower()
+
+
+def test_update_blank_sex_gives_the_sex_spoken_error():
+    with pytest.raises(ValidationError) as exc:
+        PatientUpdate(sex="")
+    assert "accepted options" in spoken_error_for(exc.value).lower()
+
+
+def test_update_blank_email_clears_the_field_without_raising():
+    update = PatientUpdate(email="")
+    assert update.email is None
+
+
+def test_update_blank_emergency_contact_phone_clears_the_field_without_raising():
+    update = PatientUpdate(emergency_contact_phone="")
+    assert update.emergency_contact_phone is None
+
+
 def test_patient_out_round_trips_from_orm_row(db):
     patient = Patient(
         first_name="Jane",

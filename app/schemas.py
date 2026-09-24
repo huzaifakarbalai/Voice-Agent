@@ -11,7 +11,7 @@ from datetime import date, datetime
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, EmailStr, StringConstraints, field_validator
-from pydantic import ValidationError
+from pydantic import ValidationError, ValidationInfo
 
 SEX_VALUES = ("Male", "Female", "Other", "Decline to Answer")
 
@@ -124,6 +124,58 @@ def _validate_insurance_member_id(value: str) -> str:
     return value.strip()
 
 
+# PatientUpdate accepts a partial payload: any field may be omitted. But a
+# field that IS explicitly provided as a falsy value (None or "") is
+# ambiguous — is the caller asking to clear it, or did something upstream
+# send a blank by mistake? The answer depends entirely on whether the
+# underlying column in app/models.py permits NULL. These two tuples are the
+# single source of truth for that split; every PatientUpdate field must be
+# in exactly one of them, and each field's validator below consults the
+# matching helper so the rule cannot silently drift out of sync with the
+# schema (see _required_on_update / _optional_on_update).
+NOT_NULL_UPDATE_FIELDS = (
+    "first_name",
+    "last_name",
+    "date_of_birth",
+    "sex",
+    "phone_number",
+    "address_line_1",
+    "city",
+    "state",
+    "zip_code",
+    "preferred_language",
+)
+
+NULLABLE_UPDATE_FIELDS = (
+    "email",
+    "address_line_2",
+    "insurance_provider",
+    "insurance_member_id",
+    "emergency_contact_name",
+    "emergency_contact_phone",
+)
+
+
+def _required_on_update(field_name: str, value, coerce):
+    """For a NOT_NULL_UPDATE_FIELDS member: a falsy value is invalid input,
+    not a request to clear the field, because there is no NULL to fall back
+    to at the database layer. Raise before it ever reaches a write."""
+    assert field_name in NOT_NULL_UPDATE_FIELDS, f"{field_name!r} is not in NOT_NULL_UPDATE_FIELDS"
+    if not value:
+        pretty = FIELD_SPOKEN_NAMES.get(field_name, field_name.replace("_", " "))
+        raise ValueError(f"{pretty} is required and cannot be blank")
+    return coerce(value)
+
+
+def _optional_on_update(field_name: str, value, coerce):
+    """For a NULLABLE_UPDATE_FIELDS member: a falsy value is a legitimate
+    request to clear the field, and normalises to None without raising."""
+    assert field_name in NULLABLE_UPDATE_FIELDS, f"{field_name!r} is not in NULLABLE_UPDATE_FIELDS"
+    if not value:
+        return None
+    return coerce(value)
+
+
 class PatientBase(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -211,40 +263,68 @@ class PatientUpdate(BaseModel):
     emergency_contact_name: Annotated[str, StringConstraints(max_length=100)] | None = None
     emergency_contact_phone: str | None = None
 
+    # --- NOT NULL columns: an explicitly blank value must raise. ---
+
     @field_validator("first_name", "last_name")
     @classmethod
-    def check_name(cls, value: str | None) -> str | None:
-        return _validate_name(value) if value else None
+    def check_name(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return _required_on_update(info.field_name, value, _validate_name)
 
     @field_validator("date_of_birth")
     @classmethod
-    def check_dob(cls, value: date | None) -> date | None:
-        return _validate_dob(value) if value else None
+    def check_dob(cls, value: date | None, info: ValidationInfo) -> date | None:
+        return _required_on_update(info.field_name, value, _validate_dob)
 
     @field_validator("sex")
     @classmethod
-    def check_sex(cls, value: str | None) -> str | None:
-        return _validate_sex(value) if value else value
+    def check_sex(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return _required_on_update(info.field_name, value, _validate_sex)
 
-    @field_validator("phone_number", "emergency_contact_phone")
+    @field_validator("phone_number")
     @classmethod
-    def check_phone(cls, value: str | None) -> str | None:
-        return _validate_phone(value) if value else None
+    def check_phone(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return _required_on_update(info.field_name, value, _validate_phone)
+
+    @field_validator("address_line_1", "city", "preferred_language")
+    @classmethod
+    def check_required_text(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return _required_on_update(info.field_name, value, lambda v: v)
 
     @field_validator("state")
     @classmethod
-    def check_state(cls, value: str | None) -> str | None:
-        return _validate_state(value) if value else None
+    def check_state(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return _required_on_update(info.field_name, value, _validate_state)
 
     @field_validator("zip_code")
     @classmethod
-    def check_zip(cls, value: str | None) -> str | None:
-        return _validate_zip(value) if value else None
+    def check_zip(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return _required_on_update(info.field_name, value, _validate_zip)
+
+    # --- Nullable columns: an explicitly blank value clears the field. ---
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def clear_blank_email(cls, value):
+        # EmailStr rejects "" as a malformed address at the type-validation
+        # step, before any "after" validator would run, so the "blank means
+        # clear it" rule has to intercept the value beforehand.
+        assert "email" in NULLABLE_UPDATE_FIELDS
+        return value or None
+
+    @field_validator("emergency_contact_phone")
+    @classmethod
+    def check_emergency_phone(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return _optional_on_update(info.field_name, value, _validate_phone)
+
+    @field_validator("address_line_2", "insurance_provider", "emergency_contact_name")
+    @classmethod
+    def check_optional_text(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return _optional_on_update(info.field_name, value, lambda v: v)
 
     @field_validator("insurance_member_id")
     @classmethod
-    def check_insurance_member_id(cls, value: str | None) -> str | None:
-        return _validate_insurance_member_id(value) if value else None
+    def check_insurance_member_id(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return _optional_on_update(info.field_name, value, _validate_insurance_member_id)
 
 
 class PatientOut(BaseModel):
