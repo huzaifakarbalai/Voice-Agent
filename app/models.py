@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime, timezone
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -37,7 +37,9 @@ class Patient(Base):
 
     insurance_provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
     insurance_member_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    preferred_language: Mapped[str] = mapped_column(String(50), nullable=False, default="English")
+    preferred_language: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="English", server_default="English"
+    )
     emergency_contact_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     emergency_contact_phone: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
@@ -51,6 +53,9 @@ class Patient(Base):
     __table_args__ = (
         Index("ix_patients_phone_number", "phone_number"),
         Index("ix_patients_last_name", "last_name"),
+        # CHECK constraint ensures sex is one of the permitted values; keeps the column
+        # a plain string so Pydantic passes str, and avoids native ENUM type complications.
+        CheckConstraint("sex IN ('Male', 'Female', 'Other', 'Decline to Answer')"),
     )
 
 
