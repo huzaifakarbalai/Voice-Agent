@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -19,7 +19,6 @@ def _serialize(patient) -> dict:
 
 @router.get("")
 def list_patients(
-    response: Response,
     last_name: str | None = None,
     date_of_birth: str | None = None,
     phone_number: str | None = None,

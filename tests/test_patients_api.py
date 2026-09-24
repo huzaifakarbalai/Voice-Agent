@@ -61,3 +61,61 @@ def test_delete_is_soft_and_hides_the_record(client):
 def test_list_rejects_unparseable_date_filter(client):
     response = client.get("/patients", params={"date_of_birth": "banana"})
     assert response.status_code == 400
+
+
+def test_get_returns_200_with_patient_data(client):
+    created = client.post("/patients", json=VALID).json()["data"]
+    response = client.get(f"/patients/{created['patient_id']}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error"] is None
+    data = body["data"]
+    assert data["patient_id"] == created["patient_id"]
+    assert data["first_name"] == "Jane"
+    assert data["last_name"] == "Doe"
+    assert data["date_of_birth"] == "1992-01-05"
+    assert data["state"] == "CA"
+
+
+def test_list_filters_by_date_of_birth(client):
+    client.post("/patients", json=VALID)
+    client.post("/patients", json={**VALID, "date_of_birth": "1985-03-15", "phone_number": "4155550199"})
+
+    response = client.get("/patients", params={"date_of_birth": "1992-01-05"})
+    assert response.status_code == 200
+    assert len(response.json()["data"]) == 1
+    assert response.json()["data"][0]["date_of_birth"] == "1992-01-05"
+
+
+def test_list_filters_by_phone_number(client):
+    client.post("/patients", json=VALID)
+    client.post("/patients", json={**VALID, "phone_number": "4155550199", "last_name": "Smith"})
+
+    response = client.get("/patients", params={"phone_number": "4155550142"})
+    assert response.status_code == 200
+    assert len(response.json()["data"]) == 1
+    assert response.json()["data"][0]["phone_number"] == "4155550142"
+
+
+def test_list_combines_multiple_filters(client):
+    client.post("/patients", json=VALID)
+    client.post("/patients", json={**VALID, "phone_number": "4155550199", "last_name": "Smith"})
+    client.post("/patients", json={**VALID, "phone_number": "4155550188", "last_name": "Doe"})
+
+    response = client.get("/patients", params={"last_name": "Doe", "phone_number": "4155550142"})
+    assert response.status_code == 200
+    assert len(response.json()["data"]) == 1
+    assert response.json()["data"][0]["last_name"] == "Doe"
+    assert response.json()["data"][0]["phone_number"] == "4155550142"
+
+
+def test_put_unknown_id_returns_404_envelope(client):
+    response = client.put("/patients/does-not-exist", json={"city": "Oakland"})
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "http_error"
+
+
+def test_delete_unknown_id_returns_404_envelope(client):
+    response = client.delete("/patients/does-not-exist")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "http_error"
