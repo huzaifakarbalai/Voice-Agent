@@ -1,7 +1,16 @@
 import os
 
-os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
-os.environ.setdefault("VAPI_SECRET", "test-secret")
+# Unconditional assignment ensures tests never use a real database, even if
+# DATABASE_URL is exported in the developer's shell. This guard prevents
+# running the test suite against production Postgres.
+os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
+os.environ["VAPI_SECRET"] = "test-secret"
+
+# Belt-and-braces: confirm the app will actually use SQLite before proceeding.
+assert os.environ["DATABASE_URL"].startswith("sqlite"), (
+    "conftest.py overrides DATABASE_URL unconditionally to SQLite. If this "
+    "assertion fires, a later change broke the override logic."
+)
 
 import pytest
 from fastapi.testclient import TestClient
