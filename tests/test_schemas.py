@@ -3,7 +3,8 @@ from datetime import date, timedelta
 import pytest
 from pydantic import ValidationError
 
-from app.schemas import PatientCreate, PatientUpdate, spoken_error_for
+from app.models import Patient
+from app.schemas import PatientCreate, PatientOut, PatientUpdate, spoken_error_for
 
 VALID = {
     "first_name": "Jane",
@@ -65,3 +66,57 @@ def test_missing_required_field_is_rejected():
 def test_update_allows_partial_payload():
     update = PatientUpdate(city="Oakland")
     assert update.model_dump(exclude_unset=True) == {"city": "Oakland"}
+
+
+def test_lowercase_sex_is_rejected_with_spoken_error():
+    with pytest.raises(ValidationError) as exc:
+        PatientCreate(**{**VALID, "sex": "male"})
+    assert "accepted options" in spoken_error_for(exc.value).lower()
+
+
+def test_malformed_email_is_rejected_with_spoken_error():
+    with pytest.raises(ValidationError) as exc:
+        PatientCreate(**{**VALID, "email": "not-an-email"})
+    assert "email" in spoken_error_for(exc.value).lower()
+
+
+def test_short_emergency_contact_phone_is_rejected_with_spoken_error():
+    with pytest.raises(ValidationError) as exc:
+        PatientCreate(**{**VALID, "emergency_contact_phone": "555"})
+    assert "emergency contact phone" in spoken_error_for(exc.value).lower()
+
+
+def test_malformed_insurance_member_id_is_rejected_with_spoken_error():
+    with pytest.raises(ValidationError) as exc:
+        PatientCreate(**{**VALID, "insurance_member_id": "-XYZ123"})
+    assert "insurance member id" in spoken_error_for(exc.value).lower()
+
+
+def test_insurance_member_id_allows_hyphens_and_spaces():
+    patient = PatientCreate(**{**VALID, "insurance_member_id": "XYZ-123 456"})
+    assert patient.insurance_member_id == "XYZ-123 456"
+
+
+def test_patient_out_round_trips_from_orm_row(db):
+    patient = Patient(
+        first_name="Jane",
+        last_name="Doe",
+        date_of_birth=date(1992, 1, 5),
+        sex="Female",
+        phone_number="4155550142",
+        address_line_1="1 Market St",
+        city="San Francisco",
+        state="CA",
+        zip_code="94105",
+    )
+    db.add(patient)
+    db.commit()
+
+    out = PatientOut.model_validate(patient)
+
+    assert out.patient_id == patient.patient_id
+    assert isinstance(out.patient_id, str)
+    assert out.first_name == "Jane"
+    assert out.date_of_birth == date(1992, 1, 5)
+    assert out.created_at == patient.created_at
+    assert not hasattr(out, "deleted_at")
