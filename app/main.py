@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI
 
 from app import models  # noqa: F401  -- registers tables on Base.metadata
+from app.api import patients as patients_api
 from app.db import Base, engine
 from app.envelope import install_exception_handlers, ok
 
@@ -14,6 +15,7 @@ install_exception_handlers(app)
 # No migration tool in this project. The schema is small and additive, and
 # create_all is idempotent. A real deployment would use Alembic.
 Base.metadata.create_all(bind=engine)
+app.include_router(patients_api.router)
 
 
 @app.get("/health")
