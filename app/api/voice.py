@@ -1,0 +1,180 @@
+"""Adapter between Vapi and the patient service.
+
+Vapi posts every server message for an assistant to one URL, discriminated by
+message.type, so this module exposes a single endpoint and dispatches inside.
+
+Tool results are returned as plain sentences rather than JSON. Vapi feeds the
+result string back to the model as the tool's output, so a sentence that states
+exactly what went wrong makes the agent re-prompt for the right field without
+any re-prompting rules in the system prompt.
+"""
+
+import json
+import logging
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.db import get_db
+from app.normalizers import normalize_patient_payload
+from app.schemas import PatientCreate, PatientUpdate, spoken_error_for
+from app.services import patients as service
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/voice", tags=["voice"])
+
+SAVE_FAILED = (
+    "I could not save the record just now because of a system error. "
+    "Apologise to the caller, tell them their details were not lost, and say "
+    "the clinic will follow up."
+)
+
+
+def verify_secret(x_vapi_secret: str | None = Header(default=None)) -> None:
+    """Vapi sends the assistant's configured server.secret on every request."""
+    if settings.vapi_secret and x_vapi_secret != settings.vapi_secret:
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+
+
+def _extract_tool_calls(message: dict) -> list[dict]:
+    """Vapi sends a flattened toolCallList and an OpenAI-shaped toolCalls.
+    Accept either so a change in the platform's payload does not break intake."""
+    calls = []
+    for item in message.get("toolCallList") or []:
+        calls.append({
+            "id": item.get("id"),
+            "name": item.get("name"),
+            "arguments": item.get("arguments") or {},
+        })
+    if calls:
+        return calls
+    for item in message.get("toolCalls") or []:
+        function = item.get("function") or {}
+        arguments = function.get("arguments") or {}
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+        calls.append({"id": item.get("id"), "name": function.get("name"), "arguments": arguments})
+    return calls
+
+
+def _handle_lookup(db: Session, arguments: dict) -> str:
+    phone = normalize_patient_payload(arguments).get("phone_number")
+    if not phone:
+        return "That phone number was not usable. Please ask the caller to repeat it."
+
+    existing = service.find_by_phone(db, phone)
+    if existing is None:
+        return "There is no existing record for that number. Continue with a new registration."
+    return (
+        f"A record already exists for {existing.first_name} {existing.last_name}, "
+        f"patient id {existing.patient_id}. Tell the caller you found their record and ask "
+        "whether they would like to update it instead of creating a new one."
+    )
+
+
+def _handle_register(db: Session, arguments: dict) -> str:
+    normalized = normalize_patient_payload(arguments)
+    try:
+        patient_data = PatientCreate(**normalized)
+    except ValidationError as exc:
+        logger.info("Rejected registration: %s", exc.errors())
+        return spoken_error_for(exc)
+
+    existing = service.find_recent_duplicate(
+        db, patient_data.phone_number, patient_data.date_of_birth
+    )
+    if existing is not None:
+        logger.info("Suppressed duplicate save for %s", existing.patient_id)
+        return (
+            f"That registration was already saved. The patient id is {existing.patient_id}. "
+            f"Confirm to the caller that they are all set, {existing.first_name}."
+        )
+
+    try:
+        patient = service.create_patient(db, patient_data.model_dump())
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database write failed. Collected payload: %s", normalized)
+        return SAVE_FAILED
+
+    logger.info("Registered patient %s payload=%s", patient.patient_id, patient_data.model_dump(mode="json"))
+    return (
+        f"The registration was saved successfully. The patient id is {patient.patient_id}. "
+        f"Tell the caller they are all set, {patient.first_name}, and end the call politely."
+    )
+
+
+def _handle_update(db: Session, arguments: dict) -> str:
+    patient_id = arguments.get("patient_id")
+    if not patient_id:
+        return "I need the patient id before I can update a record. Look the caller up by phone number first."
+
+    changes = {k: v for k, v in arguments.items() if k != "patient_id" and v is not None}
+    if not changes:
+        return "No fields were provided to update. Please ask the caller what they would like to change."
+
+    try:
+        validated = PatientUpdate(**normalize_patient_payload(changes))
+    except ValidationError as exc:
+        logger.info("Rejected update: %s", exc.errors())
+        return spoken_error_for(exc)
+
+    try:
+        patient = service.update_patient(db, patient_id, validated.model_dump(exclude_unset=True))
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Database update failed. Payload: %s", changes)
+        return SAVE_FAILED
+
+    if patient is None:
+        return "I could not find that record. Please look the caller up by phone number again."
+
+    logger.info("Updated patient %s fields=%s", patient_id, sorted(changes))
+    return (
+        f"The record was updated successfully. Confirm the change to the caller, "
+        f"{patient.first_name}, and ask whether anything else needs correcting."
+    )
+
+
+HANDLERS = {
+    "lookup_patient_by_phone": _handle_lookup,
+    "register_patient": _handle_register,
+    "update_patient": _handle_update,
+}
+
+
+@router.post("/webhook", dependencies=[Depends(verify_secret)])
+async def webhook(request: Request, db: Session = Depends(get_db)):
+    body = await request.json()
+    message = body.get("message") or {}
+    message_type = message.get("type")
+
+    if message_type == "tool-calls":
+        results = []
+        for call in _extract_tool_calls(message):
+            handler = HANDLERS.get(call["name"])
+            if handler is None:
+                logger.warning("Unknown tool requested: %s", call["name"])
+                result = "That action is not available. Continue the conversation without it."
+            else:
+                result = handler(db, call["arguments"])
+            results.append({"toolCallId": call["id"], "result": result})
+        return {"results": results}
+
+    if message_type == "end-of-call-report":
+        return _handle_end_of_call(db, message)
+
+    # Vapi sends status updates, speech events and transcripts to the same URL.
+    # Acknowledge them so it does not retry.
+    return {"received": True}
+
+
+def _handle_end_of_call(db: Session, message: dict) -> dict:
+    """Implemented in Task 8."""
+    return {"received": True}
