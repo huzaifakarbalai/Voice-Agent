@@ -227,7 +227,23 @@ def normalize_date(raw) -> date | None:
     lowered = re.sub(r"\b(\d+)(st|nd|rd|th)\b", r"\1", lowered)
     lowered = _expand_spoken_years(lowered)
     try:
-        return date_parser.parse(lowered, dayfirst=False).date()
+        # dateutil silently invents any component (year, month, or day) the
+        # text does not actually specify, by filling it in from `default`.
+        # A caller who answers "what is your date of birth" with just a year
+        # is a normal partial answer on a phone call, and a fabricated day
+        # and month -- today's, whatever today happens to be -- would be a
+        # real, plausible, completely wrong date of birth silently written to
+        # the record; nothing downstream can detect it after the fact. So the
+        # text is parsed twice against two different defaults: a component
+        # the text actually supplied comes out identical both times, and any
+        # component dateutil had to invent differs between the two parses.
+        # If anything differs, the input was incomplete and this returns
+        # None -- a re-prompt -- rather than guessing.
+        first = date_parser.parse(lowered, dayfirst=False, default=datetime(2000, 1, 1))
+        second = date_parser.parse(lowered, dayfirst=False, default=datetime(2001, 2, 2))
+        if (first.year, first.month, first.day) != (second.year, second.month, second.day):
+            return None
+        return first.date()
     except (ValueError, OverflowError, TypeError):
         return None
 

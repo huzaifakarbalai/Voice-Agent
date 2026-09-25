@@ -77,6 +77,26 @@ def test_date_unparseable_phrase_returns_none():
     assert normalize_date("January fifth banana") is None
 
 
+# A caller who answers "what is your date of birth" with just a year, or
+# just a month and day, has given a genuine partial answer -- not a typo.
+# dateutil will happily invent the missing piece from whatever `default` it
+# is given (today's month and day, in our case), producing a real, past,
+# entirely plausible date that is still completely fabricated. That date
+# would pass every downstream check -- nothing after normalize_date can tell
+# a real answer from an invented one -- so it must be rejected here, at the
+# only point that knows the input was incomplete. Do not "fix" these to
+# return a best-guess date; a re-prompt is correct behaviour, not a bug.
+def test_date_year_only_is_rejected_not_completed_with_todays_month_and_day():
+    assert normalize_date("1992") is None
+    assert normalize_date("nineteen ninety-two") is None
+    assert normalize_date("two thousand one") is None
+    assert normalize_date("nineteen eighty") is None
+
+
+def test_date_month_and_day_without_year_is_rejected():
+    assert normalize_date("January fifth") is None
+
+
 def test_sex_maps_loose_input_to_enum():
     assert normalize_sex("male") == "Male"
     assert normalize_sex("F") == "Female"
