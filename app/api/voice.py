@@ -12,6 +12,7 @@ any re-prompting rules in the system prompt.
 import json
 import logging
 import secrets
+from collections import OrderedDict
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import ValidationError
@@ -26,6 +27,26 @@ from app.services import patients as service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/voice", tags=["voice"])
+
+# In-process bounded mapping from call_id to patient_id. Used to correlate
+# end-of-call reports with the patient the call actually touched, rather than
+# relying solely on phone number lookup which fails on shared lines (e.g., a
+# parent registering two children). Bounded to prevent memory leaks if a call
+# never sends an end-of-call report. Short-lived by design: if the process
+# restarts mid-call it degrades to phone-lookup fallback, which is acceptable.
+_CALL_TO_PATIENT = OrderedDict()
+_CALL_TO_PATIENT_MAX = 256
+
+
+def _record_call_patient_link(call_id: str | None, patient_id: str) -> None:
+    """Record the mapping of call_id to the patient this call concerned.
+    Evicts oldest entry if at capacity."""
+    if not call_id:
+        return
+    if len(_CALL_TO_PATIENT) >= _CALL_TO_PATIENT_MAX:
+        _CALL_TO_PATIENT.popitem(last=False)  # Remove oldest (FIFO)
+    _CALL_TO_PATIENT[call_id] = patient_id
+
 
 SAVE_FAILED = (
     "I could not save the record just now because of a system error. "
@@ -77,7 +98,7 @@ def _extract_tool_calls(message: dict) -> list[dict]:
     return calls
 
 
-def _handle_lookup(db: Session, arguments: dict) -> str:
+def _handle_lookup(db: Session, arguments: dict, call_id: str | None = None) -> str:
     phone = normalize_patient_payload(arguments).get("phone_number")
     if not phone:
         return "That phone number was not usable. Please ask the caller to repeat it."
@@ -85,6 +106,7 @@ def _handle_lookup(db: Session, arguments: dict) -> str:
     existing = service.find_by_phone(db, phone)
     if existing is None:
         return "There is no existing record for that number. Continue with a new registration."
+    _record_call_patient_link(call_id, existing.patient_id)
     return (
         f"A record already exists for {existing.first_name} {existing.last_name}, "
         f"patient id {existing.patient_id}. Tell the caller you found their record and ask "
@@ -92,7 +114,7 @@ def _handle_lookup(db: Session, arguments: dict) -> str:
     )
 
 
-def _handle_register(db: Session, arguments: dict) -> str:
+def _handle_register(db: Session, arguments: dict, call_id: str | None = None) -> str:
     normalized = normalize_patient_payload(arguments)
     try:
         patient_data = PatientCreate(**normalized)
@@ -105,6 +127,7 @@ def _handle_register(db: Session, arguments: dict) -> str:
     )
     if existing is not None:
         logger.info("Suppressed duplicate save for %s", existing.patient_id)
+        _record_call_patient_link(call_id, existing.patient_id)
         return (
             f"That registration was already saved. The patient id is {existing.patient_id}. "
             f"Confirm to the caller that they are all set, {existing.first_name}."
@@ -117,6 +140,7 @@ def _handle_register(db: Session, arguments: dict) -> str:
         logger.exception("Database write failed. Collected payload: %s", normalized)
         return SAVE_FAILED
 
+    _record_call_patient_link(call_id, patient.patient_id)
     logger.info("Registered patient %s payload=%s", patient.patient_id, patient_data.model_dump(mode="json"))
     return (
         f"The registration was saved successfully. The patient id is {patient.patient_id}. "
@@ -124,7 +148,7 @@ def _handle_register(db: Session, arguments: dict) -> str:
     )
 
 
-def _handle_update(db: Session, arguments: dict) -> str:
+def _handle_update(db: Session, arguments: dict, call_id: str | None = None) -> str:
     patient_id = arguments.get("patient_id")
     if not patient_id:
         return "I need the patient id before I can update a record. Look the caller up by phone number first."
@@ -149,6 +173,7 @@ def _handle_update(db: Session, arguments: dict) -> str:
     if patient is None:
         return "I could not find that record. Please look the caller up by phone number again."
 
+    _record_call_patient_link(call_id, patient_id)
     logger.info("Updated patient %s fields=%s", patient_id, sorted(changes))
     return (
         f"The record was updated successfully. Confirm the change to the caller, "
@@ -168,6 +193,7 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
     body = await request.json()
     message = body.get("message") or {}
     message_type = message.get("type")
+    call_id = (message.get("call") or {}).get("id")
 
     if message_type == "tool-calls":
         results = []
@@ -180,7 +206,7 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
                 result = "That action is not available. Continue the conversation without it."
             else:
                 try:
-                    result = handler(db, call["arguments"])
+                    result = handler(db, call["arguments"], call_id)
                 except Exception:
                     # Backstop beneath the narrower SQLAlchemyError handling inside each
                     # handler. Anything else -- a TypeError from an unexpected argument
@@ -209,7 +235,14 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
 def _handle_end_of_call(db: Session, message: dict) -> dict:
     """Stores a transcript for every completed call, including calls that dropped
     before the caller confirmed. Those produce a transcript with no patient
-    attached, which is the point: the interaction is not lost."""
+    attached, which is the point: the interaction is not lost.
+
+    Correlation strategy: the in-process call_id->patient_id mapping is consulted
+    first (what this call actually touched); only if there is no entry does the
+    handler fall back to phone-number lookup. This handles shared household lines
+    (e.g., parent registering two children) by correlating to the actual call,
+    not the most recent patient with that number. On process restart, correlation
+    degrades to phone-lookup fallback, which is acceptable."""
     call = message.get("call") or {}
     call_id = call.get("id")
     if not call_id:
@@ -221,12 +254,16 @@ def _handle_end_of_call(db: Session, message: dict) -> dict:
     transcript = artifact.get("transcript") or message.get("transcript")
     summary = analysis.get("summary") or message.get("summary")
 
-    patient_id = None
-    caller_number = normalize_phone((call.get("customer") or {}).get("number"))
-    if caller_number:
-        existing = service.find_by_phone(db, caller_number)
-        if existing is not None:
-            patient_id = existing.patient_id
+    # Check the in-process mapping first to link via what the call actually did.
+    patient_id = _CALL_TO_PATIENT.pop(call_id, None)
+
+    # Fall back to phone lookup only if no prior record of this call was made.
+    if patient_id is None:
+        caller_number = normalize_phone((call.get("customer") or {}).get("number"))
+        if caller_number:
+            existing = service.find_by_phone(db, caller_number)
+            if existing is not None:
+                patient_id = existing.patient_id
 
     try:
         service.save_transcript(db, call_id, transcript, summary, patient_id)
