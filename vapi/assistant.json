@@ -1,0 +1,106 @@
+{
+  "name": "Patient Intake Agent",
+  "firstMessage": "Thanks for calling Huzaifa Healthcare, this is the patient registration line. Are you calling to register as a new patient?",
+  "model": {
+    "provider": "openai",
+    "model": "gpt-4o",
+    "temperature": 0.3,
+    "messages": [
+      {
+        "role": "system",
+        "content": "REPLACED AT PUSH TIME FROM prompts/system_prompt.md"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "lookup_patient_by_phone",
+          "description": "Check whether a patient record already exists for a phone number. Call this as soon as the caller gives their phone number.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "phone_number": {
+                "type": "string",
+                "description": "The caller's US phone number, digits only if possible."
+              }
+            },
+            "required": ["phone_number"]
+          }
+        },
+        "server": { "url": "<YOUR-BACKEND-URL>/voice/webhook" }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "register_patient",
+          "description": "Save a new patient record. Call this only after reading every field back to the caller and receiving their confirmation.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "first_name": { "type": "string" },
+              "last_name": { "type": "string" },
+              "date_of_birth": { "type": "string", "description": "Any clear date format. MM/DD/YYYY is fine." },
+              "sex": { "type": "string", "enum": ["Male", "Female", "Other", "Decline to Answer"] },
+              "phone_number": { "type": "string", "description": "US phone number, 10 digits." },
+              "email": { "type": "string" },
+              "address_line_1": { "type": "string" },
+              "address_line_2": { "type": "string" },
+              "city": { "type": "string" },
+              "state": { "type": "string", "description": "US state. Full name or two-letter abbreviation." },
+              "zip_code": { "type": "string" },
+              "insurance_provider": { "type": "string" },
+              "insurance_member_id": { "type": "string" },
+              "preferred_language": { "type": "string" },
+              "emergency_contact_name": { "type": "string" },
+              "emergency_contact_phone": { "type": "string" }
+            },
+            "required": [
+              "first_name", "last_name", "date_of_birth", "sex", "phone_number",
+              "address_line_1", "city", "state", "zip_code"
+            ]
+          }
+        },
+        "server": { "url": "<YOUR-BACKEND-URL>/voice/webhook" }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "update_patient",
+          "description": "Update an existing patient record. Requires a patient_id from lookup_patient_by_phone. Send only the fields that are changing.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "patient_id": { "type": "string" },
+              "first_name": { "type": "string" },
+              "last_name": { "type": "string" },
+              "date_of_birth": { "type": "string" },
+              "sex": { "type": "string", "enum": ["Male", "Female", "Other", "Decline to Answer"] },
+              "phone_number": { "type": "string" },
+              "email": { "type": "string" },
+              "address_line_1": { "type": "string" },
+              "address_line_2": { "type": "string" },
+              "city": { "type": "string" },
+              "state": { "type": "string" },
+              "zip_code": { "type": "string" },
+              "insurance_provider": { "type": "string" },
+              "insurance_member_id": { "type": "string" },
+              "preferred_language": { "type": "string" },
+              "emergency_contact_name": { "type": "string" },
+              "emergency_contact_phone": { "type": "string" }
+            },
+            "required": ["patient_id"]
+          }
+        },
+        "server": { "url": "<YOUR-BACKEND-URL>/voice/webhook" }
+      }
+    ]
+  },
+  "voice": { "provider": "11labs", "voiceId": "burt" },
+  "transcriber": { "provider": "deepgram", "model": "nova-2", "language": "en-US" },
+  "server": { "url": "<YOUR-BACKEND-URL>/voice/webhook" },
+  "serverMessages": ["tool-calls", "end-of-call-report"],
+  "endCallMessage": "Thanks for calling. Take care.",
+  "silenceTimeoutSeconds": 20,
+  "maxDurationSeconds": 900
+}
