@@ -5,6 +5,7 @@
     "provider": "openai",
     "model": "gpt-4o",
     "temperature": 0.3,
+    "endCallFunctionEnabled": true,
     "messages": [
       {
         "role": "system",

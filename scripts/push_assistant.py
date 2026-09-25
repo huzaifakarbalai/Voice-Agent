@@ -33,9 +33,14 @@ def main() -> int:
         print(f"Missing environment variables: {', '.join(missing)}", file=sys.stderr)
         return 1
 
-    config = json.loads((ROOT / "vapi" / "assistant.json").read_text(encoding="utf-8"))
-    prompt = (ROOT / "prompts" / "system_prompt.md").read_text(encoding="utf-8")
-    config["model"]["messages"][0]["content"] = prompt
+    assistant_path = ROOT / "vapi" / "assistant.json"
+    try:
+        config = json.loads(assistant_path.read_text(encoding="utf-8"))
+        prompt = (ROOT / "prompts" / "system_prompt.md").read_text(encoding="utf-8")
+        config["model"]["messages"][0]["content"] = prompt
+    except (json.JSONDecodeError, KeyError, IndexError) as exc:
+        print(f"Could not read a valid assistant config from {assistant_path}: {exc}", file=sys.stderr)
+        return 1
 
     raw = json.dumps(config).replace("<YOUR-BACKEND-URL>", backend_url)
 
@@ -50,6 +55,9 @@ def main() -> int:
             print(f"Updated assistant {assistant_id} ({response.status})")
     except urllib.error.HTTPError as exc:
         print(f"Vapi rejected the update ({exc.code}): {exc.read().decode()}", file=sys.stderr)
+        return 1
+    except urllib.error.URLError as exc:
+        print(f"Could not reach Vapi: {exc.reason}", file=sys.stderr)
         return 1
     return 0
 
