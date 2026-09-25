@@ -46,6 +46,37 @@ def test_date_accepts_iso_us_and_spoken_forms():
     assert normalize_date("not a date") is None
 
 
+def test_date_accepts_numeric_year_regression():
+    # Same phrase as the spoken-year cases below, but with a plain numeral —
+    # this must keep working exactly as it did before spoken-year expansion
+    # was added.
+    assert normalize_date("January fifth 1992") == date(1992, 1, 5)
+
+
+def test_date_expands_spoken_years():
+    assert normalize_date("January fifth nineteen ninety-two") == date(1992, 1, 5)
+    assert normalize_date("March third two thousand one") == date(2001, 3, 3)
+    assert normalize_date("June twelfth nineteen seventy five") == date(1975, 6, 12)
+    assert normalize_date("April ninth nineteen eighty") == date(1980, 4, 9)
+    assert normalize_date("May second nineteen oh five") == date(1905, 5, 2)
+    assert normalize_date("July fourth two thousand") == date(2000, 7, 4)
+    assert normalize_date("August sixth two thousand and one") == date(2001, 8, 6)
+    assert normalize_date("September first twenty ten") == date(2010, 9, 1)
+    assert normalize_date("October second twenty twenty") == date(2020, 10, 2)
+    assert normalize_date("November third twenty oh five") == date(2005, 11, 3)
+
+
+def test_date_unknown_spoken_year_form_returns_none_rather_than_guessing():
+    # "nineteen hundred and five" is not one of the recognized shapes.
+    # normalize_date must not guess a year here -- it must return None so
+    # the caller is re-prompted instead of a wrong DOB being saved.
+    assert normalize_date("January fifth nineteen hundred and five") is None
+
+
+def test_date_unparseable_phrase_returns_none():
+    assert normalize_date("January fifth banana") is None
+
+
 def test_sex_maps_loose_input_to_enum():
     assert normalize_sex("male") == "Male"
     assert normalize_sex("F") == "Female"

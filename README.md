@@ -69,11 +69,11 @@ code paths that are supposed to agree, kept in sync only by convention.
 |---|---|---|
 | Telephony + voice | Vapi | Free US inbound number, no card required. Handles speech-to-text, the LLM turn, text-to-speech, turn-taking, and barge-in — building that on raw telephony would be a project on its own. |
 | Backend | Python 3.12 + FastAPI | Async, small, and gives free auto-generated OpenAPI docs at `/docs`, which double as a reviewer-facing artifact. |
-| Validation | Pydantic (`app/schemas.py`) | Declarative validation for the ~19 patient fields, with `field_validator`s that raise `ValueError` with a message the rest of the code can key off, rather than validation logic scattered across route handlers. |
+| Validation | Pydantic (`app/schemas.py`) | Declarative validation for the patient schema — 16 input fields on `PatientBase`/`PatientCreate` (19 total attributes once the three server-generated ones, `patient_id`, `created_at`, `updated_at`, are counted on `PatientOut`) — with `field_validator`s that raise `ValueError` with a message the rest of the code can key off, rather than validation logic scattered across route handlers. |
 | Database | Postgres (Neon, free tier) | Render's free web service has no persistent disk, so anything on local SQLite is lost on every redeploy or container recycle. Postgres on Neon survives that; the app must still work the day after a redeploy. |
 | ORM | SQLAlchemy 2.0 (`Mapped`/`mapped_column` style) | One model definition (`app/models.py`) runs unmodified against Postgres in production and SQLite in tests. |
 | Hosting | Render free web service | Free, deploys straight from GitHub. Sleeps after 15 minutes idle — mitigated with an external keep-alive ping to `/health` (see Trade-offs). |
-| Tests | pytest, in-memory SQLite | Fast, hermetic, no network dependency; 87 tests. |
+| Tests | pytest, in-memory SQLite | Fast, hermetic, no network dependency; 91 tests. |
 
 ## Design decision: validation speaks
 
@@ -122,7 +122,7 @@ cd <repo>
 pip install -r requirements.txt
 cp .env.example .env        # then edit .env — see Environment variables below
 uvicorn app.main:app --reload
-pytest                        # 87 tests, in-memory SQLite, no external services needed
+pytest                        # 91 tests, in-memory SQLite, no external services needed
 ```
 
 The app defaults `DATABASE_URL` to a local SQLite file
@@ -139,10 +139,15 @@ your own.
 | Variable | Used by | Purpose |
 |---|---|---|
 | `DATABASE_URL` | the app (`app/config.py`) | Postgres connection string. `postgresql://` and `postgres://` are rewritten to `postgresql+psycopg://` automatically, since SQLAlchemy 2.0 needs the driver named and this project installs `psycopg` 3. Falls back to a local SQLite file if unset. |
-| `VAPI_SECRET` | the app (`app/api/voice.py`) | Shared secret Vapi sends as the `x-vapi-secret` header on every webhook request. See "Security posture" below. |
+| `VAPI_SECRET` | the app (`app/config.py`, consumed in `app/api/voice.py`) | Shared secret Vapi sends as the `x-vapi-secret` header on every webhook request. See "Security posture" below. |
 | `VAPI_API_KEY` | `scripts/push_assistant.py` only | Vapi private API key, used to PATCH the assistant config. Never read by the running app. |
 | `VAPI_ASSISTANT_ID` | `scripts/push_assistant.py` only | The Vapi assistant to update. |
 | `BACKEND_URL` | `scripts/push_assistant.py` only | Deployed backend base URL; substituted into the tool `server.url` fields and the assistant-level `server.url` in `vapi/assistant.json` before pushing. |
+
+`render.yaml` additionally sets `PYTHON_VERSION` (`3.12.7`) as a Render
+build-time env var. That is a Render platform setting, not something the
+application reads at runtime (`app/config.py` never looks it up), so it has
+no corresponding entry in `.env.example` and does not need to be set locally.
 
 ## API reference
 
@@ -156,6 +161,14 @@ Every response — success or failure — is one envelope:
 All five endpoints are under `/patients`. Deletes are **soft** — they set
 `deleted_at` and the row disappears from list/get, but the row itself is
 never removed.
+
+Set this once, substituting the real deployed URL for `<your-deployed-url>`
+(the same value that fills `<API_BASE_URL>` at the top of this file), and
+every example below is copy-pasteable as-is:
+
+```bash
+export API_BASE_URL=<your-deployed-url>
+```
 
 **List, with optional filters**
 
@@ -316,4 +329,4 @@ first, per the assessment's own stated preference:
 - Authentication on the REST API.
 - Alembic migrations, ahead of any schema change to a system with real data.
 - A browser-driven (e.g. Playwright) test for the dashboard, to complement
-  the 87 backend tests, which do not currently exercise `static/index.html`.
+  the 91 backend tests, which do not currently exercise `static/index.html`.

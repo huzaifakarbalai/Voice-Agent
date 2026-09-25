@@ -66,6 +66,109 @@ SEX_SYNONYMS = {
 
 ZIP_RE = re.compile(r"^\d{5}(-\d{4})?$")
 
+# --- Spoken year expansion --------------------------------------------------
+#
+# dateutil parses "January 5th, 1992" fine but has no idea what to do with
+# "nineteen ninety-two" -- a birth year an American caller says just as
+# naturally as a numeral. This expands the small, closed set of ways people
+# actually say a year out loud. It is deliberately NOT a general English
+# number parser: only these specific shapes are recognized. Anything else
+# ("nineteen hundred and five", or any other phrasing) is left as words,
+# which dateutil then fails to parse, so normalize_date returns None rather
+# than silently guessing a year -- a wrong date of birth silently written to
+# a patient record is worse than one extra re-prompt.
+
+_YEAR_ONES = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9,
+}
+_YEAR_ZERO = {"oh": 0, "o": 0, "zero": 0}
+_YEAR_TEENS = {
+    "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19,
+}
+_YEAR_TENS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+
+_YEAR_SEP = r"[\s-]+"
+
+
+def _alt(words) -> str:
+    return "(?:" + "|".join(words) + ")"
+
+
+_ONES_ALT = _alt(_YEAR_ONES)
+_ZERO_ALT = _alt(_YEAR_ZERO)
+_TENS_ALT = _alt(_YEAR_TENS)
+_TEENS_ALT = _alt(_YEAR_TEENS)
+
+
+def _year_1900_zero_ones(m: re.Match) -> str:
+    # "nineteen oh five" -> 1905
+    return str(1900 + _YEAR_ONES[m.group(2)])
+
+
+def _year_1900_tens_ones(m: re.Match) -> str:
+    # "nineteen eighty" -> 1980, "nineteen ninety-two" -> 1992
+    year = 1900 + _YEAR_TENS[m.group(1)]
+    if m.group(2):
+        year += _YEAR_ONES[m.group(2)]
+    return str(year)
+
+
+def _year_2000_thousand(m: re.Match) -> str:
+    # "two thousand" -> 2000, "two thousand one" / "two thousand and one" -> 2001
+    year = 2000
+    if m.group(1):
+        year += _YEAR_ONES[m.group(1)]
+    return str(year)
+
+
+def _year_2000_teens(m: re.Match) -> str:
+    # "twenty ten" -> 2010
+    return str(2000 + _YEAR_TEENS[m.group(1)])
+
+
+def _year_2000_tens_ones(m: re.Match) -> str:
+    # "twenty twenty" -> 2020, "twenty twenty one" -> 2021
+    year = 2000 + _YEAR_TENS[m.group(1)]
+    if m.group(2):
+        year += _YEAR_ONES[m.group(2)]
+    return str(year)
+
+
+def _year_2000_zero_ones(m: re.Match) -> str:
+    # "twenty oh five" -> 2005
+    return str(2000 + _YEAR_ONES[m.group(2)])
+
+
+# Checked in order; each pattern only fires on one fixed, known spoken-year
+# shape. A phrase that matches none of them (e.g. "nineteen hundred and
+# five") is returned unchanged by _expand_spoken_years below.
+_YEAR_PATTERNS = [
+    (re.compile(rf"\bnineteen{_YEAR_SEP}({_ZERO_ALT}){_YEAR_SEP}({_ONES_ALT})\b"), _year_1900_zero_ones),
+    (re.compile(rf"\bnineteen{_YEAR_SEP}({_TENS_ALT})(?:{_YEAR_SEP}({_ONES_ALT}))?\b"), _year_1900_tens_ones),
+    (re.compile(rf"\btwo{_YEAR_SEP}thousand(?:{_YEAR_SEP}and)?(?:{_YEAR_SEP}({_ONES_ALT}))?\b"), _year_2000_thousand),
+    (re.compile(rf"\btwenty{_YEAR_SEP}({_TEENS_ALT})\b"), _year_2000_teens),
+    (re.compile(rf"\btwenty{_YEAR_SEP}({_TENS_ALT})(?:{_YEAR_SEP}({_ONES_ALT}))?\b"), _year_2000_tens_ones),
+    (re.compile(rf"\btwenty{_YEAR_SEP}({_ZERO_ALT}){_YEAR_SEP}({_ONES_ALT})\b"), _year_2000_zero_ones),
+]
+
+
+def _expand_spoken_years(text: str) -> str:
+    """Replace one recognized spoken year (see _YEAR_PATTERNS) with digits.
+    Text that matches none of the known shapes is returned unchanged, so the
+    dateutil parse that follows fails and normalize_date returns None rather
+    than guessing."""
+    for pattern, handler in _YEAR_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return text[: match.start()] + handler(match) + text[match.end():]
+    return text
+
 
 def _words_to_digits(raw: str) -> str:
     """Replace spelled-out digits with numerals, leaving everything else alone."""
@@ -116,11 +219,13 @@ def normalize_date(raw) -> date | None:
             return datetime.strptime(text, fmt).date()
         except ValueError:
             pass
-    # Spoken forms: "January fifth 1992", "January 5th, 1992".
+    # Spoken forms: "January fifth 1992", "January 5th, 1992",
+    # "January fifth nineteen ninety-two".
     lowered = text.lower()
     for word, numeral in ORDINAL_WORDS.items():
         lowered = re.sub(rf"\b{re.escape(word)}\b", numeral, lowered)
     lowered = re.sub(r"\b(\d+)(st|nd|rd|th)\b", r"\1", lowered)
+    lowered = _expand_spoken_years(lowered)
     try:
         return date_parser.parse(lowered, dayfirst=False).date()
     except (ValueError, OverflowError, TypeError):
