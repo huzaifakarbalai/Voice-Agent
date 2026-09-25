@@ -1,5 +1,11 @@
 # Voice AI Patient Registration Implementation Plan
 
+> **Note:** This is a historical planning artifact. The implementation
+> evolved during review as each task was scoped and re-scoped, and in
+> several places the shipped code differs from what is described below
+> (e.g. reference code, file layout, or exact behavior). Where this plan
+> and the code disagree, the code is authoritative.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A caller dials a US phone number, registers as a patient through natural conversation, and the validated record persists in Postgres and is retrievable through a REST API and a dashboard.

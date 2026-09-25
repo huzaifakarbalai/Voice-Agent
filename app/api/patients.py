@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.envelope import ok
-from app.normalizers import normalize_date
+from app.normalizers import normalize_date, normalize_phone
 from app.schemas import PatientCreate, PatientOut, PatientUpdate
 from app.services import patients as service
 
@@ -29,6 +29,15 @@ def list_patients(
         parsed_dob = normalize_date(date_of_birth)
         if parsed_dob is None:
             raise HTTPException(status_code=400, detail="date_of_birth must be a valid date")
+
+    if phone_number:
+        # Stored as bare digits; a human-formatted query string (e.g. "(415)
+        # 555-1234") must still reach the database in the same shape the
+        # column holds, or the filter silently returns zero rows. Fall back
+        # to the raw value if it doesn't normalize, so an unnormalizable
+        # value still reaches the database as given rather than being
+        # dropped.
+        phone_number = normalize_phone(phone_number) or phone_number
 
     records = service.list_patients(
         db, last_name=last_name, date_of_birth=parsed_dob, phone_number=phone_number

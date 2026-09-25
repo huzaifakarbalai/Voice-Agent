@@ -47,6 +47,7 @@ SPOKEN_ERRORS: dict[str, str] = {
     "zip_code": "That ZIP code is not valid. Please ask the caller for their five digit ZIP code.",
     "emergency_contact_phone": "That emergency contact phone number is not a valid ten digit US number. Please ask the caller to repeat it.",
     "insurance_member_id": "That insurance member ID does not look right. Please ask the caller to repeat it, or note that insurance information is optional and can be skipped.",
+    "preferred_language": "I did not catch a usable preferred language. Please ask the caller for it again, and note it is optional and can be skipped.",
 }
 
 GENERIC_SPOKEN_ERROR = "Something about that information was not valid. Please ask the caller to repeat the last answer."

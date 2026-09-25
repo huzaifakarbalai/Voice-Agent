@@ -222,8 +222,16 @@ def normalize_date(raw) -> date | None:
     # Spoken forms: "January fifth 1992", "January 5th, 1992",
     # "January fifth nineteen ninety-two".
     lowered = text.lower()
-    for word, numeral in ORDINAL_WORDS.items():
-        lowered = re.sub(rf"\b{re.escape(word)}\b", numeral, lowered)
+    # Longest-first is required, not cosmetic: "-" is a non-word character, so
+    # \bfirst\b matches *inside* "twenty-first" as well as on its own. If
+    # "first" is substituted before "twenty-first" is ever tried, it rewrites
+    # "twenty-first" to "twenty-1" and the compound entry never gets a chance
+    # to match at all. Sorting longest-first guarantees every compound ordinal
+    # is substituted before any of its single-word suffixes can shadow it. Do
+    # not "simplify" this back to dict order.
+    for word, numeral in sorted(ORDINAL_WORDS.items(), key=lambda kv: -len(kv[0])):
+        pattern = r"\b" + r"[-\s]+".join(re.escape(p) for p in word.split("-")) + r"\b"
+        lowered = re.sub(pattern, numeral, lowered)
     lowered = re.sub(r"\b(\d+)(st|nd|rd|th)\b", r"\1", lowered)
     lowered = _expand_spoken_years(lowered)
     try:

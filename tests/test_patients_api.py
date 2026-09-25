@@ -97,6 +97,25 @@ def test_list_filters_by_phone_number(client):
     assert response.json()["data"][0]["phone_number"] == "4155550142"
 
 
+def test_list_filters_by_human_formatted_phone_number(client):
+    client.post("/patients", json=VALID)
+    client.post("/patients", json={**VALID, "phone_number": "4155550199", "last_name": "Smith"})
+
+    response = client.get("/patients", params={"phone_number": "(415) 555-0142"})
+    assert response.status_code == 200
+    assert len(response.json()["data"]) == 1
+    assert response.json()["data"][0]["phone_number"] == "4155550142"
+
+
+def test_list_filters_by_last_name_case_insensitively(client):
+    client.post("/patients", json=VALID)  # last_name "Doe"
+
+    response = client.get("/patients", params={"last_name": "doe"})
+    assert response.status_code == 200
+    assert len(response.json()["data"]) == 1
+    assert response.json()["data"][0]["last_name"] == "Doe"
+
+
 def test_list_combines_multiple_filters(client):
     client.post("/patients", json=VALID)
     client.post("/patients", json={**VALID, "phone_number": "4155550199", "last_name": "Smith"})

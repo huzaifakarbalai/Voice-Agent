@@ -1,6 +1,7 @@
 from datetime import date
 
 from app.normalizers import (
+    ORDINAL_WORDS,
     normalize_date,
     normalize_patient_payload,
     normalize_phone,
@@ -91,6 +92,34 @@ def test_date_year_only_is_rejected_not_completed_with_todays_month_and_day():
     assert normalize_date("nineteen ninety-two") is None
     assert normalize_date("two thousand one") is None
     assert normalize_date("nineteen eighty") is None
+
+
+def test_date_partial_forms_are_rejected():
+    # Year alone, spoken year alone, and month+day with no year must all be
+    # re-prompted rather than silently completed with a fabricated component.
+    assert normalize_date("1992") is None
+    assert normalize_date("nineteen ninety-two") is None
+    assert normalize_date("January fifth") is None
+
+
+def test_date_every_ordinal_word_resolves_hyphenated_and_spaced():
+    # Regression for the compound-ordinal bug: dict-insertion-order
+    # substitution let "first" match inside "twenty-first" before the
+    # compound entry was ever tried, silently mangling every 21st-31st
+    # birthday. This iterates every entry in ORDINAL_WORDS -- not a
+    # hand-picked sample -- in both the hyphenated form a caller's transcript
+    # is likely to produce ("twenty-first") and the spaced form ("twenty
+    # first"), and asserts each resolves to the correct day of the month.
+    for word, numeral in ORDINAL_WORDS.items():
+        expected_day = int(numeral)
+        hyphenated = normalize_date(f"March {word} 1992")
+        spaced = normalize_date(f"March {word.replace('-', ' ')} 1992")
+        assert hyphenated == date(1992, 3, expected_day), (
+            f"{word!r} (hyphenated) resolved to {hyphenated}, expected day {expected_day}"
+        )
+        assert spaced == date(1992, 3, expected_day), (
+            f"{word!r} (spaced) resolved to {spaced}, expected day {expected_day}"
+        )
 
 
 def test_date_month_and_day_without_year_is_rejected():

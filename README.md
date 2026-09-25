@@ -73,7 +73,7 @@ code paths that are supposed to agree, kept in sync only by convention.
 | Database | Postgres (Neon, free tier) | Render's free web service has no persistent disk, so anything on local SQLite is lost on every redeploy or container recycle. Postgres on Neon survives that; the app must still work the day after a redeploy. |
 | ORM | SQLAlchemy 2.0 (`Mapped`/`mapped_column` style) | One model definition (`app/models.py`) runs unmodified against Postgres in production and SQLite in tests. |
 | Hosting | Render free web service | Free, deploys straight from GitHub. Sleeps after 15 minutes idle — mitigated with an external keep-alive ping to `/health` (see Trade-offs). |
-| Tests | pytest, in-memory SQLite | Fast, hermetic, no network dependency; 91 tests. |
+| Tests | pytest, in-memory SQLite | Fast, hermetic, no network dependency; 102 tests. |
 
 ## Design decision: validation speaks
 
@@ -122,7 +122,15 @@ cd <repo>
 pip install -r requirements.txt
 cp .env.example .env        # then edit .env — see Environment variables below
 uvicorn app.main:app --reload
-pytest                        # 91 tests, in-memory SQLite, no external services needed
+```
+
+To run the test suite, install the dev requirements as well (`pytest` and
+`httpx` are not part of the runtime deployment, so they live in a separate
+file rather than in `requirements.txt`):
+
+```bash
+pip install -r requirements-dev.txt
+pytest                        # 102 tests, in-memory SQLite, no external services needed
 ```
 
 The app defaults `DATABASE_URL` to a local SQLite file
@@ -284,9 +292,10 @@ mysterious 401s.
   demographic records with zero access control end to end.
 - **Free-tier hosting sleeps after 15 minutes idle.** A call landing on a
   cold instance would time out mid-save while the agent waits. Mitigated
-  by an external keep-alive ping to `/health` every 10 minutes
-  (`render.yaml`'s `healthCheckPath`, plus a cron-job.org job — see the
-  task brief) rather than paying for an always-on instance.
+  by an external keep-alive ping (`render.yaml`'s `healthCheckPath`, plus a
+  cron-job.org job hitting `<API_BASE_URL>/health` every 10 minutes, so the
+  instance never sits idle long enough to suspend) rather than paying for
+  an always-on instance.
 - **Vapi's free phone numbers are US-domestic inbound only.** No
   international callers, no outbound calling.
 - **Transcript-to-patient correlation is in-process and unpersisted.**
@@ -329,4 +338,4 @@ first, per the assessment's own stated preference:
 - Authentication on the REST API.
 - Alembic migrations, ahead of any schema change to a system with real data.
 - A browser-driven (e.g. Playwright) test for the dashboard, to complement
-  the 91 backend tests, which do not currently exercise `static/index.html`.
+  the 102 backend tests, which do not currently exercise `static/index.html`.

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 from app import models  # noqa: F401  -- registers tables on Base.metadata
 from app.api import patients as patients_api
@@ -19,7 +20,22 @@ install_exception_handlers(app)
 
 # No migration tool in this project. The schema is small and additive, and
 # create_all is idempotent. A real deployment would use Alembic.
-Base.metadata.create_all(bind=engine)
+#
+# Neon's free tier auto-suspends when idle, so the database can be
+# unreachable at boot. create_all() is called at import time here (not in a
+# lifespan handler -- keeping this change minimal), so letting that
+# exception propagate would crash the import and crash-loop the whole
+# container right before an assessor calls, taking down /health along with
+# everything else. Instead: log it loudly and continue degraded, so /health
+# keeps answering even if the database does not. The tables get created on
+# the next process start that finds the database reachable -- this is not a
+# retry loop, just create_all() being idempotent and run again on the next
+# boot. A real deployment with a live schema would use Alembic migrations
+# instead of create_all() entirely.
+try:
+    Base.metadata.create_all(bind=engine)
+except SQLAlchemyError:
+    logger.error("Could not create database tables at startup; database may be unreachable.", exc_info=True)
 app.include_router(patients_api.router)
 app.include_router(voice_api.router)
 

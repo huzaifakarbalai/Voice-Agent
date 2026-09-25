@@ -105,8 +105,10 @@ def _handle_lookup(db: Session, arguments: dict, call_id: str | None = None) -> 
 
     existing = service.find_by_phone(db, phone)
     if existing is None:
+        logger.info("Lookup found no record for phone=%s", phone)
         return "There is no existing record for that number. Continue with a new registration."
     _record_call_patient_link(call_id, existing.patient_id)
+    logger.info("Lookup found existing patient %s for phone=%s", existing.patient_id, phone)
     return (
         f"A record already exists for {existing.first_name} {existing.last_name}, "
         f"patient id {existing.patient_id}. Tell the caller you found their record and ask "
@@ -174,7 +176,11 @@ def _handle_update(db: Session, arguments: dict, call_id: str | None = None) -> 
         return "I could not find that record. Please look the caller up by phone number again."
 
     _record_call_patient_link(call_id, patient_id)
-    logger.info("Updated patient %s fields=%s", patient_id, sorted(changes))
+    logger.info(
+        "Updated patient %s payload=%s",
+        patient_id,
+        validated.model_dump(mode="json", exclude_unset=True),
+    )
     return (
         f"The record was updated successfully. Confirm the change to the caller, "
         f"{patient.first_name}, and ask whether anything else needs correcting."
@@ -190,7 +196,15 @@ HANDLERS = {
 
 @router.post("/webhook", dependencies=[Depends(verify_secret)])
 async def webhook(request: Request, db: Session = Depends(get_db)):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        # There is no toolCallId to attach a result to for a body that never
+        # parsed, so the {data, error} envelope the global handler would
+        # otherwise return is not an option either -- Vapi cannot read it.
+        # Log it and acknowledge so Vapi does not retry.
+        logger.exception("Malformed webhook request body")
+        return {"received": True}
     message = body.get("message") or {}
     message_type = message.get("type")
     call_id = (message.get("call") or {}).get("id")

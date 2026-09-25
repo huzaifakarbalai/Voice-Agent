@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -168,3 +167,7 @@ def test_transcript_links_to_actual_patient_touched_by_call_not_phone_match(clie
         f"Transcript linked to {transcript.patient_id} (Patient C?), "
         f"but should have linked to {patient_b_id} (Patient B) via call_id correlation"
     )
+    # Also must not link to Patient A -- the call touched neither the oldest
+    # (A) nor the newest (C) patient on this shared line, only the one it
+    # actually registered (B).
+    assert transcript.patient_id != patient_a_id

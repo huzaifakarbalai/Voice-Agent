@@ -51,3 +51,20 @@ def client(db):
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_call_to_patient_map():
+    """app/api/voice.py keeps a module-level call_id -> patient_id mapping
+    that is never reset between requests in production (that's intentional --
+    it degrades to phone-lookup fallback on process restart). In tests,
+    though, nothing ever restarts the process between test functions, so a
+    call id reused across tests would silently carry over a stale mapping
+    from a previous test. Import deferred to the fixture body, not module
+    scope, so this file does not create a circular import with app.main
+    (which app.api.voice itself depends on via app.db)."""
+    from app.api import voice as voice_api
+
+    voice_api._CALL_TO_PATIENT.clear()
+    yield
+    voice_api._CALL_TO_PATIENT.clear()

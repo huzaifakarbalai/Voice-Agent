@@ -73,6 +73,20 @@ def test_lookup_reports_no_match_then_a_match(client):
     assert "Jane" in result and "Doe" in result
 
 
+def test_lookup_logs_the_normalized_phone_on_both_branches(client, caplog):
+    args = {"phone_number": "4155550142"}
+    with caplog.at_level(logging.INFO, logger="app.api.voice"):
+        client.post("/voice/webhook", json=tool_call("lookup_patient_by_phone", args), headers=HEADERS)
+    assert any("4155550142" in record.getMessage() for record in caplog.records)
+
+    caplog.clear()
+    client.post("/voice/webhook", json=tool_call("register_patient", VALID_ARGS), headers=HEADERS)
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="app.api.voice"):
+        client.post("/voice/webhook", json=tool_call("lookup_patient_by_phone", args), headers=HEADERS)
+    assert any("4155550142" in record.getMessage() for record in caplog.records)
+
+
 def test_update_tool_changes_a_field(client):
     client.post("/voice/webhook", json=tool_call("register_patient", VALID_ARGS), headers=HEADERS)
     patient_id = client.get("/patients").json()["data"][0]["patient_id"]
@@ -83,6 +97,20 @@ def test_update_tool_changes_a_field(client):
         headers=HEADERS,
     )
     assert client.get(f"/patients/{patient_id}").json()["data"]["city"] == "Oakland"
+
+
+def test_update_logs_the_validated_payload_not_just_field_names(client, caplog):
+    client.post("/voice/webhook", json=tool_call("register_patient", VALID_ARGS), headers=HEADERS)
+    patient_id = client.get("/patients").json()["data"][0]["patient_id"]
+
+    with caplog.at_level(logging.INFO, logger="app.api.voice"):
+        client.post(
+            "/voice/webhook",
+            json=tool_call("update_patient", {"patient_id": patient_id, "city": "Oakland"}),
+            headers=HEADERS,
+        )
+    # The resolved value, not just the field name, must appear in the log.
+    assert any("Oakland" in record.getMessage() for record in caplog.records)
 
 
 def test_unknown_tool_name_returns_a_spoken_message(client):
@@ -183,3 +211,17 @@ def test_malformed_json_arguments_degrades_to_spoken_error(client):
     result = response.json()["results"][0]["result"]
     assert result
     assert client.get("/patients").json()["data"] == []
+
+
+def test_malformed_request_body_is_acknowledged_not_a_rest_error_envelope(client):
+    """A body that is not valid JSON at all must not fall through to the
+    global exception handler's {data, error} envelope -- Vapi cannot read
+    that shape. It must be acknowledged with {"received": True} instead,
+    since there is no toolCallId to attach a result to."""
+    response = client.post(
+        "/voice/webhook",
+        content=b"{not valid json at all",
+        headers={**HEADERS, "content-type": "application/json"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"received": True}

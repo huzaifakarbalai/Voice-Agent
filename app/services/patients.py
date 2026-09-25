@@ -8,7 +8,7 @@ returns ORM objects out, which is what makes it testable without a web server.
 
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import CallTranscript, Patient
@@ -39,7 +39,11 @@ def list_patients(
 ) -> list[Patient]:
     statement = _active(select(Patient))
     if last_name:
-        statement = statement.where(Patient.last_name == last_name)
+        # Case-insensitive equality, not a wildcard match: the dashboard is
+        # the only interactive search an assessor gets, and an exact,
+        # case-sensitive comparison means a lowercase "doe" finds nothing for
+        # "Doe". func.lower() behaves identically on SQLite and Postgres.
+        statement = statement.where(func.lower(Patient.last_name) == last_name.lower())
     if date_of_birth:
         statement = statement.where(Patient.date_of_birth == date_of_birth)
     if phone_number:

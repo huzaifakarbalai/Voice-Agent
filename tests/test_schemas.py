@@ -121,6 +121,20 @@ def test_update_blank_sex_gives_the_sex_spoken_error():
     assert "accepted options" in spoken_error_for(exc.value).lower()
 
 
+def test_update_blank_preferred_language_gives_the_preferred_language_spoken_error():
+    with pytest.raises(ValidationError) as exc:
+        PatientUpdate(preferred_language="")
+    message = spoken_error_for(exc.value).lower()
+    assert "preferred language" in message
+    assert "optional" in message
+
+
+def test_create_over_long_preferred_language_gives_the_preferred_language_spoken_error():
+    with pytest.raises(ValidationError) as exc:
+        PatientCreate(**{**VALID, "preferred_language": "x" * 51})
+    assert "preferred language" in spoken_error_for(exc.value).lower()
+
+
 def test_update_blank_email_clears_the_field_without_raising():
     update = PatientUpdate(email="")
     assert update.email is None
