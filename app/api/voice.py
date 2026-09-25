@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.normalizers import normalize_patient_payload
+from app.normalizers import normalize_patient_payload, normalize_phone
 from app.schemas import PatientCreate, PatientUpdate, spoken_error_for
 from app.services import patients as service
 
@@ -207,5 +207,33 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
 
 
 def _handle_end_of_call(db: Session, message: dict) -> dict:
-    """Implemented in Task 8."""
+    """Stores a transcript for every completed call, including calls that dropped
+    before the caller confirmed. Those produce a transcript with no patient
+    attached, which is the point: the interaction is not lost."""
+    call = message.get("call") or {}
+    call_id = call.get("id")
+    if not call_id:
+        logger.warning("End-of-call report with no call id; ignoring")
+        return {"received": True}
+
+    artifact = message.get("artifact") or {}
+    analysis = message.get("analysis") or {}
+    transcript = artifact.get("transcript") or message.get("transcript")
+    summary = analysis.get("summary") or message.get("summary")
+
+    patient_id = None
+    caller_number = normalize_phone((call.get("customer") or {}).get("number"))
+    if caller_number:
+        existing = service.find_by_phone(db, caller_number)
+        if existing is not None:
+            patient_id = existing.patient_id
+
+    try:
+        service.save_transcript(db, call_id, transcript, summary, patient_id)
+    except SQLAlchemyError:
+        db.rollback()
+        logger.exception("Failed to store transcript for call %s", call_id)
+        return {"received": True}
+
+    logger.info("Stored transcript for call %s linked to patient %s", call_id, patient_id)
     return {"received": True}
