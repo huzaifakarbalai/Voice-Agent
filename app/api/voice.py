@@ -11,6 +11,7 @@ any re-prompting rules in the system prompt.
 
 import json
 import logging
+import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import ValidationError
@@ -32,10 +33,23 @@ SAVE_FAILED = (
     "the clinic will follow up."
 )
 
+UNEXPECTED_ERROR = (
+    "Something went wrong on our end and I could not complete that just now. "
+    "Apologise to the caller, tell them their details were not lost, and say "
+    "the clinic will follow up."
+)
+
 
 def verify_secret(x_vapi_secret: str | None = Header(default=None)) -> None:
-    """Vapi sends the assistant's configured server.secret on every request."""
-    if settings.vapi_secret and x_vapi_secret != settings.vapi_secret:
+    """Vapi sends the assistant's configured server.secret on every request.
+
+    Fails closed: if no secret is configured, every request is rejected
+    rather than accepted, so a forgotten VAPI_SECRET on a deployed instance
+    does not leave patient-creating endpoints open to the public internet.
+    app/main.py logs a startup warning so a missing secret is loud, not a
+    mysterious wall of 401s.
+    """
+    if not settings.vapi_secret or not secrets.compare_digest(x_vapi_secret or "", settings.vapi_secret):
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
 
@@ -160,10 +174,27 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         for call in _extract_tool_calls(message):
             handler = HANDLERS.get(call["name"])
             if handler is None:
-                logger.warning("Unknown tool requested: %s", call["name"])
+                logger.warning(
+                    "Unknown tool requested: %s arguments=%s", call["name"], call["arguments"]
+                )
                 result = "That action is not available. Continue the conversation without it."
             else:
-                result = handler(db, call["arguments"])
+                try:
+                    result = handler(db, call["arguments"])
+                except Exception:
+                    # Backstop beneath the narrower SQLAlchemyError handling inside each
+                    # handler. Anything else -- a TypeError from an unexpected argument
+                    # shape, a normalizer bug, a driver error that doesn't subclass
+                    # SQLAlchemyError -- must still produce a result string. Vapi cannot
+                    # read the REST {data, error} envelope the global handler would
+                    # otherwise return, so an uncaught exception here is silence on the
+                    # call, not a visible error.
+                    db.rollback()
+                    logger.exception(
+                        "Unhandled error handling tool call. tool=%s arguments=%s",
+                        call["name"], call["arguments"],
+                    )
+                    result = UNEXPECTED_ERROR
             results.append({"toolCallId": call["id"], "result": result})
         return {"results": results}
 

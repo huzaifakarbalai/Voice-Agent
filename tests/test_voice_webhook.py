@@ -1,3 +1,7 @@
+import logging
+
+from sqlalchemy.exc import SQLAlchemyError
+
 VALID_ARGS = {
     "first_name": "Jane",
     "last_name": "Doe",
@@ -100,3 +104,82 @@ def test_openai_style_tool_call_shape_is_accepted(client):
     }
     response = client.post("/voice/webhook", json=payload, headers=HEADERS)
     assert response.json()["results"][0]["toolCallId"] == "tc-9"
+
+
+def test_missing_configured_secret_fails_closed(client, monkeypatch):
+    """If VAPI_SECRET is unset on the deployed instance, every request must be
+    rejected rather than accepted -- see app/main.py's startup warning for the
+    operator-facing half of this fix."""
+    from app.api import voice as voice_api
+
+    monkeypatch.setattr(voice_api.settings, "vapi_secret", None)
+    response = client.post(
+        "/voice/webhook", json=tool_call("register_patient", VALID_ARGS), headers=HEADERS
+    )
+    assert response.status_code == 401
+
+
+def test_database_failure_returns_spoken_apology_and_saves_nothing(client, monkeypatch, caplog):
+    from app.services import patients as service
+
+    def boom(*args, **kwargs):
+        raise SQLAlchemyError("simulated database failure")
+
+    monkeypatch.setattr(service, "create_patient", boom)
+
+    with caplog.at_level(logging.ERROR, logger="app.api.voice"):
+        response = client.post(
+            "/voice/webhook", json=tool_call("register_patient", VALID_ARGS), headers=HEADERS
+        )
+
+    assert response.status_code == 200
+    result = response.json()["results"][0]["result"]
+    assert "system error" in result.lower()
+    assert client.get("/patients").json()["data"] == []
+    # The collected payload must be recoverable from the logs even though the
+    # write itself failed.
+    assert any("Jane" in record.getMessage() for record in caplog.records)
+
+
+def test_unexpected_exception_still_returns_a_spoken_apology_not_a_500(client, monkeypatch, caplog):
+    """A bug or driver error that is NOT a SQLAlchemyError must still produce a
+    result string. Without the catch-all, this would escape to the global
+    exception handler and return the REST {data, error} envelope, which Vapi
+    cannot read -- the model gets no result and the caller hears silence."""
+    from app.services import patients as service
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("unexpected bug")
+
+    monkeypatch.setattr(service, "create_patient", boom)
+
+    with caplog.at_level(logging.ERROR, logger="app.api.voice"):
+        response = client.post(
+            "/voice/webhook", json=tool_call("register_patient", VALID_ARGS), headers=HEADERS
+        )
+
+    assert response.status_code == 200
+    result = response.json()["results"][0]["result"]
+    assert "apologise" in result.lower()
+    assert "clinic will follow up" in result.lower()
+    assert client.get("/patients").json()["data"] == []
+    assert any("register_patient" in record.getMessage() for record in caplog.records)
+
+
+def test_malformed_json_arguments_degrades_to_spoken_error(client):
+    """An OpenAI-shaped tool call whose arguments string is not valid JSON must
+    still return a spoken message and 200, not crash."""
+    payload = {
+        "message": {
+            "type": "tool-calls",
+            "call": {"id": "call-10"},
+            "toolCalls": [
+                {"id": "tc-10", "function": {"name": "register_patient", "arguments": "{not valid json"}}
+            ],
+        }
+    }
+    response = client.post("/voice/webhook", json=payload, headers=HEADERS)
+    assert response.status_code == 200
+    result = response.json()["results"][0]["result"]
+    assert result
+    assert client.get("/patients").json()["data"] == []
