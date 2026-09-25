@@ -1,6 +1,8 @@
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 
 from app import models  # noqa: F401  -- registers tables on Base.metadata
 from app.api import patients as patients_api
@@ -20,6 +22,14 @@ install_exception_handlers(app)
 Base.metadata.create_all(bind=engine)
 app.include_router(patients_api.router)
 app.include_router(voice_api.router)
+
+DASHBOARD = Path(__file__).parent / "static" / "index.html"
+
+
+@app.get("/dashboard", include_in_schema=False)
+def dashboard():
+    return FileResponse(DASHBOARD)
+
 
 if not settings.vapi_secret:
     # /voice/webhook fails closed when this is unset (see app/api/voice.py), so the
