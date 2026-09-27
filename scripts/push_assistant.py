@@ -49,6 +49,13 @@ def main() -> int:
     webhook_secret = os.environ.get("VAPI_SECRET")
     if webhook_secret:
         config.setdefault("server", {})["secret"] = webhook_secret
+        # Every tool carries its own server block, and a tool-level server
+        # config REPLACES the assistant-level one rather than merging with it.
+        # Without the secret on each tool, Vapi posts tool calls with no
+        # x-vapi-secret header and the backend rejects them with 401 mid-call.
+        for tool in config.get("model", {}).get("tools", []):
+            if "server" in tool:
+                tool["server"]["secret"] = webhook_secret
     else:
         print(
             "VAPI_SECRET not set — the assistant's server secret will be left as it is. "
