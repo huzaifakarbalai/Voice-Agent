@@ -9,14 +9,23 @@ available through a REST API and a small dashboard. This is a technical
 assessment project, not a production system: it stores no real patient data
 and has no HIPAA controls.
 
-**Fill these in once deployed:**
+**Live system:**
 
 ```
-Phone number:    <PHONE_NUMBER>
-API base URL:    <API_BASE_URL>
-Dashboard:       <API_BASE_URL>/dashboard
-API docs:        <API_BASE_URL>/docs
+Phone number:    +1 (628) 241-4412
+API base URL:    https://voice-agent-production-78e2.up.railway.app
+Dashboard:       https://voice-agent-production-78e2.up.railway.app/dashboard
+API docs:        https://voice-agent-production-78e2.up.railway.app/docs
 ```
+
+Call the number and register as a new patient, then check the dashboard or
+`GET /patients` to see the record. Call again from the same number and the
+agent will recognise you and offer to update the existing record instead of
+creating a second one.
+
+The REST API is intentionally unauthenticated so it can be tested directly —
+see Trade-offs for why that would be unacceptable in production. The database
+holds one synthetic demonstration record; it contains no real patient data.
 
 ## Architecture
 
@@ -70,9 +79,9 @@ code paths that are supposed to agree, kept in sync only by convention.
 | Telephony + voice | Vapi | Free US inbound number, no card required. Handles speech-to-text, the LLM turn, text-to-speech, turn-taking, and barge-in — building that on raw telephony would be a project on its own. |
 | Backend | Python 3.12 + FastAPI | Async, small, and gives free auto-generated OpenAPI docs at `/docs`, which double as a reviewer-facing artifact. |
 | Validation | Pydantic (`app/schemas.py`) | Declarative validation for the patient schema — 16 input fields on `PatientBase`/`PatientCreate` (19 total attributes once the three server-generated ones, `patient_id`, `created_at`, `updated_at`, are counted on `PatientOut`) — with `field_validator`s that raise `ValueError` with a message the rest of the code can key off, rather than validation logic scattered across route handlers. |
-| Database | Postgres (Neon, free tier) | Render's free web service has no persistent disk, so anything on local SQLite is lost on every redeploy or container recycle. Postgres on Neon survives that; the app must still work the day after a redeploy. |
+| Database | Postgres (Neon, free tier) | Free-tier containers have no persistent disk, so anything on local SQLite is lost on every redeploy or container recycle. Postgres on Neon survives that; the app must still work the day after a redeploy. |
 | ORM | SQLAlchemy 2.0 (`Mapped`/`mapped_column` style) | One model definition (`app/models.py`) runs unmodified against Postgres in production and SQLite in tests. |
-| Hosting | Render free web service | Free, deploys straight from GitHub. Sleeps after 15 minutes idle — mitigated with an external keep-alive ping to `/health` (see Trade-offs). |
+| Hosting | Railway | Free trial credit, deploys straight from GitHub, and does not sleep when idle — so a call never lands on a cold instance. `render.yaml` and `Procfile` are both committed, so the same app deploys unchanged on Render or any other Procfile-aware host. |
 | Tests | pytest, in-memory SQLite | Fast, hermetic, no network dependency; 102 tests. |
 
 ## Design decision: validation speaks
@@ -152,10 +161,11 @@ your own.
 | `VAPI_ASSISTANT_ID` | `scripts/push_assistant.py` only | The Vapi assistant to update. |
 | `BACKEND_URL` | `scripts/push_assistant.py` only | Deployed backend base URL; substituted into the tool `server.url` fields and the assistant-level `server.url` in `vapi/assistant.json` before pushing. |
 
-`render.yaml` additionally sets `PYTHON_VERSION` (`3.12.7`) as a Render
-build-time env var. That is a Render platform setting, not something the
-application reads at runtime (`app/config.py` never looks it up), so it has
-no corresponding entry in `.env.example` and does not need to be set locally.
+Deployment metadata lives in three committed files, none of which the
+application reads at runtime: `Procfile` declares the start command,
+`.python-version` pins the interpreter to 3.12, and `render.yaml` describes
+the service for Render specifically. They exist so the app deploys unchanged
+on Railway, Render, or any other Procfile-aware host.
 
 ## API reference
 
@@ -170,12 +180,10 @@ All five endpoints are under `/patients`. Deletes are **soft** — they set
 `deleted_at` and the row disappears from list/get, but the row itself is
 never removed.
 
-Set this once, substituting the real deployed URL for `<your-deployed-url>`
-(the same value that fills `<API_BASE_URL>` at the top of this file), and
-every example below is copy-pasteable as-is:
+Set this once and every example below is copy-pasteable as-is:
 
 ```bash
-export API_BASE_URL=<your-deployed-url>
+export API_BASE_URL=https://voice-agent-production-78e2.up.railway.app
 ```
 
 **List, with optional filters**
@@ -292,12 +300,13 @@ mysterious 401s.
   publicly testable endpoint, so `/patients/*` has no auth. This would be
   unacceptable in a real system handling patient data — it stores full
   demographic records with zero access control end to end.
-- **Free-tier hosting sleeps after 15 minutes idle.** A call landing on a
-  cold instance would time out mid-save while the agent waits. Mitigated
-  by an external keep-alive ping (`render.yaml`'s `healthCheckPath`, plus a
-  cron-job.org job hitting `<API_BASE_URL>/health` every 10 minutes, so the
-  instance never sits idle long enough to suspend) rather than paying for
-  an always-on instance.
+- **Host choice was driven by cold starts.** A sleeping free-tier instance
+  would time out mid-save while the agent waits, and the caller would hear
+  the agent apologise for a failure that was really a cold container.
+  Railway does not sleep, which removes the problem outright. On a host that
+  does sleep — Render's free tier, for instance — the mitigation is an
+  external keep-alive job hitting `/health` every 10 minutes rather than
+  paying for an always-on instance.
 - **Vapi's free phone numbers are US-domestic inbound only.** No
   international callers, no outbound calling.
 - **Transcript-to-patient correlation is in-process and unpersisted.**
@@ -308,9 +317,9 @@ mysterious 401s.
   alone could attach the wrong child's call to a sibling's most recent
   record. On a multi-worker deployment or a process restart mid-call, that
   mapping is gone and the code falls back to phone-number lookup, which is
-  usually right but not guaranteed to be for shared lines. A single Render
-  free-tier instance does not run multiple workers, so this is a real but
-  narrow gap.
+  usually right but not guaranteed to be for shared lines. The deployed
+  service runs a single uvicorn process with no `--workers` flag, so this is
+  a real but narrow gap.
 - **Timestamp columns reject naive datetimes.** `UTCDateTime` in
   `app/models.py` is a `TypeDecorator` that raises on write if a naive
   `datetime` is passed, and normalizes every value read back to
