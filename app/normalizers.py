@@ -66,6 +66,20 @@ SEX_SYNONYMS = {
 
 ZIP_RE = re.compile(r"^\d{5}(-\d{4})?$")
 
+# Fields the caller may decline. Membership mirrors the "Req: No" column of the
+# assessment's data model and the nullable columns in app/models.py; keep the
+# three in step. Required fields are deliberately absent so that an empty one
+# still fails validation and produces its own spoken re-prompt.
+OPTIONAL_FIELDS = (
+    "email",
+    "address_line_2",
+    "insurance_provider",
+    "insurance_member_id",
+    "preferred_language",
+    "emergency_contact_name",
+    "emergency_contact_phone",
+)
+
 # --- Spoken year expansion --------------------------------------------------
 #
 # dateutil parses "January 5th, 1992" fine but has no idea what to do with
@@ -292,5 +306,17 @@ def normalize_patient_payload(payload: dict) -> dict:
     if result.get("date_of_birth") is not None:
         parsed = normalize_date(result["date_of_birth"])
         result["date_of_birth"] = parsed.isoformat() if parsed else result["date_of_birth"]
+
+    # A caller who declines the optional details leaves the model sending the
+    # keys anyway, as "" or null. Passing those through makes validation reject
+    # a field the caller deliberately skipped — the agent then demands an email
+    # or a preferred language it was just told not to collect, and the call
+    # loops. An absent optional field and an empty one mean the same thing, so
+    # drop them here and let the schema defaults apply. Required fields are
+    # never dropped: an empty one must still fail and produce its spoken error.
+    for key in OPTIONAL_FIELDS:
+        value = result.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            result.pop(key, None)
 
     return result

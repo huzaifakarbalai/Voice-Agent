@@ -155,3 +155,42 @@ def test_payload_passes_unnormalizable_values_through_for_validation_to_reject()
     result = normalize_patient_payload({"phone_number": "555", "state": "Freedonia"})
     assert result["phone_number"] == "555"
     assert result["state"] == "Freedonia"
+
+
+# Declined optional fields arrive from the model as "" or null rather than
+# being omitted. They must be dropped so schema defaults apply — otherwise the
+# agent re-prompts for details the caller explicitly refused and the call loops.
+def test_blank_optional_fields_are_dropped_so_defaults_apply():
+    payload = {
+        "first_name": "Jane",
+        "email": "",
+        "insurance_provider": "   ",
+        "insurance_member_id": None,
+        "preferred_language": "",
+        "emergency_contact_name": None,
+        "emergency_contact_phone": "",
+        "address_line_2": "",
+    }
+    result = normalize_patient_payload(payload)
+    for key in (
+        "email", "insurance_provider", "insurance_member_id", "preferred_language",
+        "emergency_contact_name", "emergency_contact_phone", "address_line_2",
+    ):
+        assert key not in result, f"{key} should have been dropped"
+    assert result["first_name"] == "Jane"
+
+
+def test_blank_required_fields_are_kept_so_validation_still_rejects_them():
+    result = normalize_patient_payload({"first_name": "", "city": None, "state": ""})
+    assert result["first_name"] == ""
+    assert result["city"] is None
+    assert result["state"] == ""
+
+
+def test_populated_optional_fields_survive():
+    result = normalize_patient_payload(
+        {"email": "a@b.com", "insurance_provider": "Aetna", "preferred_language": "Spanish"}
+    )
+    assert result["email"] == "a@b.com"
+    assert result["insurance_provider"] == "Aetna"
+    assert result["preferred_language"] == "Spanish"

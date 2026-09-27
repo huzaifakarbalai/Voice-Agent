@@ -1,3 +1,4 @@
+import json
 import logging
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -225,3 +226,26 @@ def test_malformed_request_body_is_acknowledged_not_a_rest_error_envelope(client
     )
     assert response.status_code == 200
     assert response.json() == {"received": True}
+
+
+# Vapi sends tool arguments as a JSON string on toolCallList as well as on
+# toolCalls — observed on a live call. An unparsed string reached the handler
+# and the caller heard a system-error apology for a valid registration.
+def test_stringified_arguments_on_toolcalllist_are_parsed(client):
+    payload = {
+        "message": {
+            "type": "tool-calls",
+            "call": {"id": "call-str"},
+            "toolCallList": [
+                {
+                    "id": "tc-str",
+                    "name": "register_patient",
+                    "arguments": json.dumps(VALID_ARGS),
+                }
+            ],
+        }
+    }
+    response = client.post("/voice/webhook", json=payload, headers=HEADERS)
+    assert response.status_code == 200
+    assert "saved successfully" in response.json()["results"][0]["result"]
+    assert len(client.get("/patients").json()["data"]) == 1

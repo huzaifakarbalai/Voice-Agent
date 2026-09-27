@@ -82,7 +82,7 @@ code paths that are supposed to agree, kept in sync only by convention.
 | Database | Postgres (Neon, free tier) | Free-tier containers have no persistent disk, so anything on local SQLite is lost on every redeploy or container recycle. Postgres on Neon survives that; the app must still work the day after a redeploy. |
 | ORM | SQLAlchemy 2.0 (`Mapped`/`mapped_column` style) | One model definition (`app/models.py`) runs unmodified against Postgres in production and SQLite in tests. |
 | Hosting | Railway | Free trial credit, deploys straight from GitHub, and does not sleep when idle — so a call never lands on a cold instance. `render.yaml` and `Procfile` are both committed, so the same app deploys unchanged on Render or any other Procfile-aware host. |
-| Tests | pytest, in-memory SQLite | Fast, hermetic, no network dependency; 102 tests. |
+| Tests | pytest, in-memory SQLite | Fast, hermetic, no network dependency; 106 tests. |
 
 ## Design decision: validation speaks
 
@@ -139,7 +139,7 @@ file rather than in `requirements.txt`):
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                        # 102 tests, in-memory SQLite, no external services needed
+pytest                        # 106 tests, in-memory SQLite, no external services needed
 ```
 
 The app defaults `DATABASE_URL` to a local SQLite file
@@ -349,4 +349,4 @@ first, per the assessment's own stated preference:
 - Authentication on the REST API.
 - Alembic migrations, ahead of any schema change to a system with real data.
 - A browser-driven (e.g. Playwright) test for the dashboard, to complement
-  the 102 backend tests, which do not currently exercise `static/index.html`.
+  the 106 backend tests, which do not currently exercise `static/index.html`.

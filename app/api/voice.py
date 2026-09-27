@@ -74,6 +74,21 @@ def verify_secret(x_vapi_secret: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
 
+def _coerce_arguments(arguments) -> dict:
+    """Tool arguments arrive either as an object or as a JSON string, on BOTH
+    payload shapes — observed live on toolCallList, not only on toolCalls.
+    A string left unparsed reaches the handler as a str, every attribute
+    lookup on it raises, and the caller hears a system-error apology for a
+    registration that was perfectly valid. Parse either form here, once."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            logger.warning("Tool arguments were a string but not valid JSON: %r", arguments[:200])
+            return {}
+    return arguments if isinstance(arguments, dict) else {}
+
+
 def _extract_tool_calls(message: dict) -> list[dict]:
     """Vapi sends a flattened toolCallList and an OpenAI-shaped toolCalls.
     Accept either so a change in the platform's payload does not break intake."""
@@ -82,19 +97,17 @@ def _extract_tool_calls(message: dict) -> list[dict]:
         calls.append({
             "id": item.get("id"),
             "name": item.get("name"),
-            "arguments": item.get("arguments") or {},
+            "arguments": _coerce_arguments(item.get("arguments")),
         })
     if calls:
         return calls
     for item in message.get("toolCalls") or []:
         function = item.get("function") or {}
-        arguments = function.get("arguments") or {}
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except json.JSONDecodeError:
-                arguments = {}
-        calls.append({"id": item.get("id"), "name": function.get("name"), "arguments": arguments})
+        calls.append({
+            "id": item.get("id"),
+            "name": function.get("name"),
+            "arguments": _coerce_arguments(function.get("arguments")),
+        })
     return calls
 
 
