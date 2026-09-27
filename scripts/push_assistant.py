@@ -42,6 +42,20 @@ def main() -> int:
         print(f"Could not read a valid assistant config from {assistant_path}: {exc}", file=sys.stderr)
         return 1
 
+    # The webhook shared secret is injected here rather than committed, so the
+    # repository stays free of credentials while one command still configures
+    # everything. It must match VAPI_SECRET on the deployed backend, which
+    # rejects every request when the two disagree.
+    webhook_secret = os.environ.get("VAPI_SECRET")
+    if webhook_secret:
+        config.setdefault("server", {})["secret"] = webhook_secret
+    else:
+        print(
+            "VAPI_SECRET not set — the assistant's server secret will be left as it is. "
+            "Set it to match the backend, or the webhook will reject every tool call.",
+            file=sys.stderr,
+        )
+
     raw = json.dumps(config).replace("<YOUR-BACKEND-URL>", backend_url)
 
     request = urllib.request.Request(
