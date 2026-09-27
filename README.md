@@ -247,7 +247,9 @@ repo — not whatever a person last typed into the dashboard — is the
 authoritative source. Running the script again always overwrites the
 dashboard's copy.
 
-There are three tools, all handled by the single webhook below:
+There are three function tools, all handled by the single webhook below, plus
+Vapi's built-in `endCall` tool so the agent can hang up cleanly once the caller
+is confirmed:
 `lookup_patient_by_phone` (checks for an existing record by phone number so
 a returning caller is recognised and offered an update instead of a
 duplicate registration), `register_patient`, and `update_patient`.
