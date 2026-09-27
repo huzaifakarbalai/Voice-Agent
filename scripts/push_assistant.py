@@ -61,7 +61,15 @@ def main() -> int:
     request = urllib.request.Request(
         f"https://api.vapi.ai/assistant/{assistant_id}",
         data=raw.encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            # Vapi sits behind Cloudflare, which rejects urllib's default
+            # "Python-urllib/3.x" signature with a 403 (error 1010) before the
+            # request ever reaches the API. An ordinary User-Agent avoids it.
+            "User-Agent": "voice-patient-intake/1.0",
+            "Accept": "application/json",
+        },
         method="PATCH",
     )
     try:
