@@ -247,6 +247,11 @@ def normalize_date(raw) -> date | None:
         pattern = r"\b" + r"[-\s]+".join(re.escape(p) for p in word.split("-")) + r"\b"
         lowered = re.sub(pattern, numeral, lowered)
     lowered = re.sub(r"\b(\d+)(st|nd|rd|th)\b", r"\1", lowered)
+    # Transcribers sometimes split a spoken year into two pairs — "nineteen
+    # eighty-eight" arriving as "19 88". Rejoin only when the leading pair is a
+    # plausible century, so a day and a year sitting side by side ("25 88")
+    # are never welded into a wrong date.
+    lowered = re.sub(r"\b(19|20)\s+(\d{2})\b", r"\1\2", lowered)
     lowered = _expand_spoken_years(lowered)
     try:
         # dateutil silently invents any component (year, month, or day) the

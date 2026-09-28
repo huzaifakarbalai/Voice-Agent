@@ -93,21 +93,24 @@ def _extract_tool_calls(message: dict) -> list[dict]:
     """Vapi sends a flattened toolCallList and an OpenAI-shaped toolCalls.
     Accept either so a change in the platform's payload does not break intake."""
     calls = []
-    for item in message.get("toolCallList") or []:
-        calls.append({
-            "id": item.get("id"),
-            "name": item.get("name"),
-            "arguments": _coerce_arguments(item.get("arguments")),
-        })
-    if calls:
-        return calls
-    for item in message.get("toolCalls") or []:
-        function = item.get("function") or {}
-        calls.append({
-            "id": item.get("id"),
-            "name": function.get("name"),
-            "arguments": _coerce_arguments(function.get("arguments")),
-        })
+    for key in ("toolCallList", "toolCalls"):
+        for item in message.get(key) or []:
+            # Items on BOTH lists may be flat ({"name", "arguments"}) or nested
+            # under "function" — observed live on toolCallList, which produced
+            # a tool name of None and an "unknown tool" reply to a perfectly
+            # valid registration. Read the flat form first, then the nested one.
+            function = item.get("function") or {}
+            name = item.get("name") or function.get("name")
+            arguments = item.get("arguments")
+            if arguments is None:
+                arguments = function.get("arguments")
+            calls.append({
+                "id": item.get("id"),
+                "name": name,
+                "arguments": _coerce_arguments(arguments),
+            })
+        if calls:
+            return calls
     return calls
 
 

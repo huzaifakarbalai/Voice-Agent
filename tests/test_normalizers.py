@@ -194,3 +194,17 @@ def test_populated_optional_fields_survive():
     assert result["email"] == "a@b.com"
     assert result["insurance_provider"] == "Aetna"
     assert result["preferred_language"] == "Spanish"
+
+
+# Transcribers split spoken years: "nineteen eighty-eight" arrives as "19 88".
+# Observed live; it reached Pydantic as "invalid character in year".
+def test_date_accepts_a_year_split_into_two_pairs():
+    assert normalize_date("March 25th 19 88") == date(1988, 3, 25)
+    assert normalize_date("March 25th 20 05") == date(2005, 3, 25)
+
+
+def test_split_year_rejoin_does_not_weld_unrelated_numbers():
+    # A leading pair that is not a plausible century must be left alone, so a
+    # partial date still fails rather than becoming a confidently wrong one.
+    assert normalize_date("1992") is None
+    assert normalize_date("January fifth") is None

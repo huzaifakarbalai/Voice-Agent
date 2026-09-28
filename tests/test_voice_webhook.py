@@ -249,3 +249,40 @@ def test_stringified_arguments_on_toolcalllist_are_parsed(client):
     assert response.status_code == 200
     assert "saved successfully" in response.json()["results"][0]["result"]
     assert len(client.get("/patients").json()["data"]) == 1
+
+
+# Vapi's toolCallList items can be nested under "function" rather than flat.
+# Observed live: the tool name read as None and a valid registration got back
+# "that action is not available".
+def test_nested_function_shape_on_toolcalllist_is_understood(client):
+    payload = {
+        "message": {
+            "type": "tool-calls",
+            "call": {"id": "call-nested"},
+            "toolCallList": [
+                {"id": "tc-n", "function": {"name": "register_patient", "arguments": VALID_ARGS}}
+            ],
+        }
+    }
+    response = client.post("/voice/webhook", json=payload, headers=HEADERS)
+    assert response.status_code == 200
+    assert "saved successfully" in response.json()["results"][0]["result"]
+    assert len(client.get("/patients").json()["data"]) == 1
+
+
+def test_nested_function_shape_with_stringified_arguments(client):
+    payload = {
+        "message": {
+            "type": "tool-calls",
+            "call": {"id": "call-nested-str"},
+            "toolCallList": [
+                {
+                    "id": "tc-ns",
+                    "function": {"name": "register_patient", "arguments": json.dumps(VALID_ARGS)},
+                }
+            ],
+        }
+    }
+    response = client.post("/voice/webhook", json=payload, headers=HEADERS)
+    assert response.status_code == 200
+    assert "saved successfully" in response.json()["results"][0]["result"]
